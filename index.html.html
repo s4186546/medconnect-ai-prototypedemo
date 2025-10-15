@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>MedConnect AI – Prototype (All-in-One Demo)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-50">
+  <div id="root"></div>
+
+  <!-- React 18 + ReactDOM 18 from CDN -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <!-- Babel Standalone for JSX in the browser (fine for prototypes) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <script type="text/babel">
+    const { useState, useMemo, useEffect } = React;
+
+    // ------------------------------
+    // Mock DB (same as original)
+    // ------------------------------
+    const seed = {
+      users: [
+        { id: "u1", role: "GP", name: "Dr. Khan", email: "gp@mca.au", password: "demo" },
+        { id: "u2", role: "Specialist", name: "Dr. Nguyen", email: "spec@mca.au", password: "demo" },
+        { id: "u3", role: "Patient", name: "Ava Lee", email: "ava@mca.au", password: "demo" },
+        { id: "u4", role: "Coordinator", name: "Jordan", email: "coord@mca.au", password: "demo" },
+        { id: "u5", role: "Admin", name: "Patel", email: "admin@mca.au", password: "demo" }
+      ],
+      referrals: [
+        { id: "r1001", createdAt: new Date().toISOString(), gp: "Dr. Khan", patient: "Ava Lee", condition: "Recurrent abdominal pain", urgency: "Medium", status: "Pending Triage", attachments: ["Prev ultrasound.pdf"], aiScore: 0.62, notes: "Rule out biliary colic." }
+      ],
+      diagnostics: [ { id: "d2001", patient: "Ava Lee", modality: "Ultrasound", status: "Scheduled", slot: "2025-10-16 10:30" } ],
+      resources: { beds: { occupied: 68, total: 80 }, imaging: [ { id: "MRI-1", utilisation: 86 }, { id: "CT-1", utilisation: 74 }, { id: "US-2", utilisation: 55 } ] },
+      audit: []
+    };
+    function loadDB(){ const raw = localStorage.getItem("mca_db"); if(!raw){ localStorage.setItem("mca_db", JSON.stringify(seed)); return seed; } try{ return JSON.parse(raw);}catch(e){ return seed; } }
+    function saveDB(db){ localStorage.setItem("mca_db", JSON.stringify(db)); }
+
+    // ------------------------------
+    // UI atoms
+    // ------------------------------
+    const Tag = ({ children, color }) => {
+      const c = color ? color : "bg-slate-100 text-slate-700";
+      return <span className={c + " px-2 py-0.5 rounded-full text-xs font-medium"}>{children}</span>;
+    };
+    const Section = ({ title, desc, children }) => (
+      <div className="bg-white shadow-sm rounded-2xl p-5 border border-slate-100">
+        <div className="mb-3">
+          <h3 className="text-lg font-semibold">{title}</h3>
+          {desc ? <p className="text-sm text-slate-500 mt-1">{desc}</p> : null}
+        </div>
+        <div className="mt-2">{children}</div>
+      </div>
+    );
+    const Field = ({ label, children }) => (<label className="block mb-3"><span className="block text-sm text-slate-600 mb-1">{label}</span>{children}</label>);
+    const Input = (props) => (<input {...props} className={(props.className||"") + " w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-slate-300"} />);
+    const TextArea = (props) => (<textarea {...props} className={(props.className||"") + " w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-slate-300"} />);
+    const Select = ({ options, ...rest }) => (
+      <select {...rest} className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-slate-300">
+        {(options||[]).map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+    );
+    const Button = ({ children, variant, ...rest }) => {
+      const v = variant || "primary";
+      const styles = {
+        primary: "bg-slate-900 text-white hover:bg-slate-800",
+        ghost: "bg-white text-slate-700 border border-slate-200 hover:bg-slate-50",
+        warn: "bg-amber-600 text-white hover:bg-amber-700",
+        success: "bg-emerald-600 text-white hover:bg-emerald-700"
+      };
+      return <button {...rest} className={(styles[v]||styles.primary) + " px-3 py-2 rounded-xl text-sm"}>{children}</button>;
+    };
+
+    // ------------------------------
+    // Auth helpers (with Demo Mode)
+    // ------------------------------
+    function useAuth(){
+      const [user, setUser] = useState(() => { const raw = sessionStorage.getItem("mca_user"); return raw ? JSON.parse(raw) : null; });
+      const login = (email, password) => { const db = loadDB(); const found = db.users.find(u => u.email===email && u.password===password); if(found){ sessionStorage.setItem("mca_user", JSON.stringify(found)); setUser(found); return true;} return false; };
+      const demoLogin = () => { const demoUser = { id: "demo", role: "*", name: "All Roles (Demo)", email: "demo@mca.au" }; sessionStorage.setItem("mca_user", JSON.stringify(demoUser)); setUser(demoUser); };
+      const setRole = (nextRole) => { if(!user) return; const next = { ...user, role: nextRole }; sessionStorage.setItem("mca_user", JSON.stringify(next)); setUser(next); };
+      const logout = () => { sessionStorage.removeItem("mca_user"); setUser(null); };
+      return { user, login, logout, demoLogin, setRole };
+    }
+    const Topbar = ({ user, onLogout, onRoleChange }) => (
+      <div className="h-14 border-b border-slate-200 bg-white flex items-center justify-between px-4">
+        <div className="font-semibold">MedConnect AI - Prototype {user.role==="*" ? "(All-in-One)" : ""}</div>
+        <div className="flex items-center gap-3 text-sm">
+          {user.role==="*" ? (
+            <select onChange={(e)=>onRoleChange(e.target.value)} className="text-sm border border-slate-200 rounded-xl px-2 py-1 bg-white">
+              {["All","Patient","GP","Specialist","Coordinator","Admin"].map(r => <option key={r} value={r}>{r}</option>)}
+            </select>
+          ) : <Tag color="bg-slate-900 text-white">{user.role}</Tag>}
+          <span className="text-slate-600 hidden sm:block">{user.name}</span>
+          <Button variant="ghost" onClick={onLogout}>Logout</Button>
+        </div>
+      </div>
+    );
+    const routesByRole = {
+      Patient: ["Patient Portal","Diagnostics","Messages"],
+      GP: ["GP e-Referral","Diagnostics","Referral Timeline"],
+      Specialist: ["Triage Inbox","Care Plan","Analytics"],
+      Coordinator: ["Theatre","Resources","Bed Manager","Analytics"],
+      Admin: ["Admin","Compliance","Integrations","Analytics"]
+    };
+    const allRoutes = Array.from(new Set(Object.values(routesByRole).flat()));
+
+    const Sidebar = ({ routes, active, onChange }) => (
+      <aside className="w-[250px] border-r border-slate-200 bg-white h-full p-3 hidden md:block">
+        <div className="text-xs uppercase tracking-wide text-slate-500 mb-2">Navigation</div>
+        <div className="flex flex-col gap-1">
+          {routes.map(r => (
+            <button key={r} onClick={() => onChange(r)} className={(active===r?"bg-slate-900 text-white":"hover:bg-slate-100") + " text-left px-3 py-2 rounded-xl text-sm"}>{r}</button>
+          ))}
+        </div>
+      </aside>
+    );
+
+    // ------------------------------
+    // Pages (copied from original)
+    // ------------------------------
+    function PagePatientPortal(){
+      const [db, setDb] = useState(loadDB());
+      const [form, setForm] = useState({ complaint: "Knee pain", language: "English", consent: true });
+      const submitIntake = () => { const ts = new Date().toISOString(); const next = { ...db, audit: [...db.audit, { ts: ts, actor: "Patient", action: "Submit intake" }] }; saveDB(next); setDb(next); alert("Intake submitted and consent captured."); };
+      return (
+        <div className="grid lg:grid-cols-2 gap-4">
+          <Section title="My Timeline" desc="Referrals, diagnostics, chat, and billing in one place.">
+            <ul className="divide-y divide-slate-100">
+              {[...db.referrals].reverse().map(r => (
+                <li key={r.id} className="py-3 flex items-center justify-between">
+                  <div>
+                    <div className="font-medium">Referral - {r.condition}</div>
+                    <div className="text-xs text-slate-500">Status: {r.status}</div>
+                  </div>
+                  <Tag color={r.urgency === "High" ? "bg-rose-100 text-rose-700" : (r.urgency === "Medium" ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700")}>{r.urgency}</Tag>
+                </li>
+              ))}
+            </ul>
+          </Section>
+          <Section title="Digital Intake and Consent" desc="Complete before your visit.">
+            <Field label="Main complaint"><Input value={form.complaint} onChange={e=>setForm({ ...form, complaint: e.target.value })} /></Field>
+            <Field label="Language preference"><Select value={form.language} onChange={e=>setForm({ ...form, language: e.target.value })} options={["English","Arabic","Mandarin","Hindi","Vietnamese"]} /></Field>
+            <label className="flex items-center gap-2 mb-4"><input type="checkbox" checked={form.consent} onChange={e=>setForm({ ...form, consent: e.target.checked })} /><span className="text-sm">I consent to share data with my care team.</span></label>
+            <div className="flex gap-2"><Button onClick={submitIntake}>Submit</Button><Button variant="ghost">Upload documents</Button></div>
+          </Section>
+          <Section title="Reminders" desc="Smart notifications schedule">
+            <div className="flex flex-col gap-2 text-sm">
+              <div className="flex items-center justify-between"><span>One week before visit</span><Tag>SMS</Tag></div>
+              <div className="flex items-center justify-between"><span>Two days before visit</span><Tag>Push</Tag></div>
+              <div className="flex items-center justify-between"><span>Same day check-in</span><Tag color="bg-emerald-100 text-emerald-700">Kiosk Link</Tag></div>
+            </div>
+          </Section>
+          <Section title="Secure Messages" desc="Ask questions or request prescriptions."><div className="text-sm text-slate-500">Prototype placeholder</div></Section>
+        </div>
+      );
+    }
+
+    function PageGPReferral(){
+      const [db, setDb] = useState(loadDB());
+      const [draft, setDraft] = useState({ patient: "Ava Lee", condition: "Recurrent abdominal pain", vitals: "BP 120/80, HR 72", urgency: "Medium", language: "English" });
+      const [ai, setAi] = useState(0.58);
+      const missing = useMemo(() => { const m = []; if(!draft.vitals) m.push("Vitals"); if(!draft.condition) m.push("Provisional dx"); return m; }, [draft]);
+      const create = () => { const r = { id: "r" + Math.floor(Math.random()*100000), createdAt: new Date().toISOString(), gp: "Dr. Khan", patient: draft.patient, condition: draft.condition, urgency: draft.urgency, status: "Pending Triage", attachments: ["Notes.pdf"], aiScore: ai, notes: "Vitals: " + draft.vitals }; const next = { ...db, referrals: [...db.referrals, r], audit: [...db.audit, { ts: r.createdAt, actor: "GP", action: "Create e-referral" }] }; saveDB(next); setDb(next); alert("Referral sent and slot reserved pending specialist response."); };
+      return (
+        <div className="grid lg:grid-cols-2 gap-4">
+          <Section title="Create e-Referral" desc="Guided form with completeness checks and slot reservation.">
+            <div className="grid sm:grid-cols-2 gap-3">
+              <Field label="Patient"><Input value={draft.patient} onChange={e=>setDraft({ ...draft, patient: e.target.value })} /></Field>
+              <Field label="Language"><Select value={draft.language} onChange={e=>setDraft({ ...draft, language: e.target.value })} options={["English","Arabic","Mandarin","Hindi","Vietnamese"]} /></Field>
+              <Field label="Provisional diagnosis"><Input value={draft.condition} onChange={e=>setDraft({ ...draft, condition: e.target.value })} /></Field>
+              <Field label="Urgency"><Select value={draft.urgency} onChange={e=>setDraft({ ...draft, urgency: e.target.value })} options={["High","Medium","Low"]} /></Field>
+              <Field label="Vitals"><Input value={draft.vitals} onChange={e=>setDraft({ ...draft, vitals: e.target.value })} /></Field>
+              <Field label="Attachments"><Button variant="ghost">Upload</Button></Field>
+            </div>
+            <div className="flex items-center gap-3 mt-3">
+              <Tag color={missing.length ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}>{missing.length ? "Missing: " + missing.join(", ") : "Complete"}</Tag>
+              <Tag>Slot reserved: 24h</Tag>
+            </div>
+            <div className="mt-4"><Button onClick={create}>Send Referral</Button></div>
+          </Section>
+          <Section title="AI Triage Preview" desc="Adjust threshold to simulate risk scoring.">
+            <div className="flex items-center gap-4">
+              <input type="range" min={0} max={100} value={Math.round(ai*100)} onChange={e=>setAi(Number(e.target.value)/100)} />
+              <div className="text-sm">Score: {Math.round(ai*100)}%</div>
+              <Tag color={ai>0.75 ? "bg-rose-100 text-rose-700" : (ai>0.45 ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700")}>{ai>0.75 ? "High" : (ai>0.45 ? "Medium" : "Low")}</Tag>
+            </div>
+          </Section>
+          <Section title="Best Match Specialists" desc="Ranked by language, billing and access.">
+            <div className="grid sm:grid-cols-2 gap-3">
+              {[
+                {n:"Dr. Nguyen", lang:"Vietnamese", next:"18 Oct, 10:30", bulk:true, pt:"Easy", rating:"4.7"},
+                {n:"Dr. Carter", lang:"English", next:"19 Oct, 14:00", bulk:false, pt:"Moderate", rating:"4.5"},
+                {n:"Dr. Patel", lang:"Hindi", next:"18 Oct, 16:10", bulk:true, pt:"Easy", rating:"4.6"}
+              ].map(s => (
+                <div key={s.n} className="border rounded-xl p-3 flex items-center justify-between">
+                  <div>
+                    <div className="font-medium">{s.n}</div>
+                    <div className="text-xs text-slate-500">Language: {s.lang}</div>
+                    <div className="text-xs text-slate-500">Bulk billing: {s.bulk ? "Yes" : "No"}</div>
+                    <div className="text-xs text-slate-500">PT access: {s.pt}</div>
+                    <div className="text-xs text-slate-500">Reviews: {s.rating}</div>
+                    <div className="text-xs text-slate-500">First open slot: {s.next}</div>
+                  </div>
+                  <Button variant="ghost">Reserve</Button>
+                </div>
+              ))}
+            </div>
+          </Section>
+          <Section title="Referral Timeline" desc="Audit of actions and documents.">
+            <ul className="text-sm list-disc ml-5">{loadDB().audit.slice(-8).map((a,i)=>(<li key={i}>{new Date(a.ts).toLocaleString()} - {a.actor} - {a.action}</li>))}</ul>
+          </Section>
+        </div>
+      );
+    }
+
+    function PageTriageInbox(){
+      const [db, setDb] = useState(loadDB());
+      const [filter, setFilter] = useState("All");
+      const setStatus = (id, status) => { const next = { ...db, referrals: db.referrals.map(r=> r.id===id? { ...r, status } : r), audit: [...db.audit, { ts:new Date().toISOString(), actor:"Specialist", action: status + " referral " + id }] }; saveDB(next); setDb(next); };
+      const items = db.referrals.filter(r => filter==="All" || r.status===filter);
+      return (
+        <div className="space-y-4">
+          <Section title="Triage Inbox" desc="Accept, request info, or forward.">
+            <div className="flex flex-wrap gap-2 mb-3">
+              {["All","Pending Triage","Accepted","More Info"].map(t => (
+                <button key={t} onClick={()=>setFilter(t)} className={(filter===t?"bg-slate-900 text-white":"bg-white text-slate-700 border border-slate-200") + " px-3 py-1.5 rounded-full text-sm"}>{t}</button>
+              ))}
+            </div>
+            <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-3">
+              {items.map(r => (
+                <div key={r.id} className="border rounded-2xl p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="font-semibold">{r.patient}</div>
+                    <Tag color={r.aiScore>0.75? "bg-rose-100 text-rose-700" : (r.aiScore>0.45? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700")}>{r.aiScore>0.75? "High" : "Medium"}</Tag>
+                  </div>
+                  <div className="text-sm text-slate-600 mt-1">{r.condition}</div>
+                  <div className="text-xs text-slate-500 mt-1">Attachments: {r.attachments.join(", ")}</div>
+                  <div className="flex gap-2 mt-3">
+                    <Button variant="success" onClick={()=>setStatus(r.id, "Accepted")}>Accept</Button>
+                    <Button variant="ghost" onClick={()=>setStatus(r.id, "More Info")}>Request Info</Button>
+                    <Button variant="warn" onClick={()=>setStatus(r.id, "Forwarded")}>Forward</Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Section>
+        </div>
+      );
+    }
+
+    function ProgressBar({ value }){
+      return (
+        <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+          <div className="h-2 bg-emerald-500" style={{ width: value + "%" }}></div>
+        </div>
+      );
+    }
+
+    function PageDiagnostics(){
+      const [db, setDb] = useState(loadDB());
+      const [newAppt, setNewAppt] = useState({ patient: "Ava Lee", modality: "MRI", slot: "2025-10-20 09:00" });
+      const [freed, setFreed] = useState("");
+      const add = () => { const d = { id:"d" + Math.floor(Math.random()*100000), patient:newAppt.patient, modality:newAppt.modality, status:"Scheduled", slot:newAppt.slot }; const next = { ...db, diagnostics:[...db.diagnostics, d], audit:[...db.audit, { ts:new Date().toISOString(), actor:"Diagnostic", action:"Schedule " + d.modality }] }; saveDB(next); setDb(next); setFreed(""); };
+      const cancel = (id, slot) => { const next = { ...db, diagnostics: db.diagnostics.filter(x=>x.id!==id), audit:[...db.audit, { ts:new Date().toISOString(), actor:"Diagnostic", action:"Cancel " + id }] }; saveDB(next); setDb(next); setFreed(slot); };
+      return (
+        <div className="grid lg:grid-cols-2 gap-4">
+          <Section title="Appointment Slots" desc="Expose real-time availability for instant booking.">
+            <div className="grid sm:grid-cols-2 gap-3">
+              {["2025-10-18 10:30","2025-10-18 14:10","2025-10-19 09:00","2025-10-19 15:40"].map(s => (
+                <button key={s} className="border rounded-xl p-3 text-sm hover:bg-slate-50 flex items-center justify-between"><span>{s}</span><Tag>Free</Tag></button>
+              ))}
+            </div>
+            {freed ? <div className="mt-3 text-sm"><Tag color="bg-emerald-100 text-emerald-700">Freed slot</Tag> {freed} - Automatically offered to next suitable patient.</div> : null}
+          </Section>
+          <Section title="Create Booking" desc="For GP or patient booking of diagnostics.">
+            <div className="grid sm:grid-cols-2 gap-3">
+              <Field label="Patient"><Input value={newAppt.patient} onChange={e=>setNewAppt({ ...newAppt, patient:e.target.value })} /></Field>
+              <Field label="Modality"><Select value={newAppt.modality} onChange={e=>setNewAppt({ ...newAppt, modality:e.target.value })} options={["MRI","CT","Ultrasound","Pathology"]} /></Field>
+              <Field label="Slot"><Input value={newAppt.slot} onChange={e=>setNewAppt({ ...newAppt, slot:e.target.value })} /></Field>
+            </div>
+            <div className="mt-3 flex gap-2"><Button onClick={add}>Schedule</Button><Button variant="ghost">Upload Result</Button></div>
+            <div className="mt-3"><div className="text-sm font-medium mb-1">Existing bookings</div>
+              <ul className="text-sm divide-y divide-slate-100">
+                {db.diagnostics.map(b => (
+                  <li key={b.id} className="py-2 flex items-center justify-between"><span>{b.modality} - {b.patient} - {b.slot}</span><div className="flex gap-2"><Button variant="ghost">Upload Result</Button><Button variant="warn" onClick={()=>cancel(b.id, b.slot)}>Cancel and re-offer</Button></div></li>
+                ))}
+              </ul>
+            </div>
+          </Section>
+          <Section title="Turnaround and Utilisation" desc="Track equipment usage and turnaround time.">
+            <div className="space-y-3">
+              {db.resources.imaging.map(im => (
+                <div key={im.id}><div className="flex items-center justify-between text-sm mb-1"><span>{im.id}</span><span>{im.utilisation}%</span></div><ProgressBar value={im.utilisation} /></div>
+              ))}
+            </div>
+          </Section>
+          <Section title="Results and Notifications" desc="Instant alerts to ordering doctor and patient.">
+            <Field label="Voice to text dictation (placeholder)"><TextArea rows="3" placeholder="Speak or paste report; terminology checks would validate before submission." /></Field>
+          </Section>
+        </div>
+      );
+    }
+
+    function PageTheatre(){
+      const [db] = useState(loadDB());
+      const [cases, setCases] = useState([ { id:"T-01", patient:"Ava Lee", proc:"Laparoscopic cholecystectomy", dur:90, status:"Induction" }, { id:"T-02", patient:"Sam Wu", proc:"Knee arthroscopy", dur:60, status:"Incision" } ]);
+      const [delay, setDelay] = useState(0);
+      useEffect(()=>{ if(delay>10) alert("Delay greater than 10 minutes. Notify floor coordinator and consider swap or backfill."); },[delay]);
+      return (
+        <div className="grid lg:grid-cols-2 gap-4">
+          <Section title="Theatre Control" desc="Phase blocks: Prep, Induction, Incision, Closure, Cleaning.">
+            <div className="space-y-3">
+              {cases.map(c => (
+                <div key={c.id} className="border rounded-2xl p-4">
+                  <div className="flex items-center justify-between"><div className="font-semibold">{c.id} - {c.patient}</div><Tag>{c.status}</Tag></div>
+                  <div className="text-sm text-slate-600">{c.proc} - {c.dur} min planned</div>
+                  <div className="mt-2 grid grid-cols-5 gap-1">
+                    {['Prep','Induction','Incision','Closure','Cleaning'].map(step => (<div key={step} className={"h-3 rounded " + (step===c.status?"bg-slate-900":"bg-slate-200")} title={step}></div>))}
+                  </div>
+                  <div className="mt-3 flex gap-2"><Button variant="ghost" onClick={()=>setDelay(d=>d+5)}>+5m Delay</Button><Button variant="success">Swap Case</Button><Button variant="warn">Backfill</Button></div>
+                </div>
+              ))}
+            </div>
+          </Section>
+          <Section title="Pre-op Checklist" desc="Ensure labs, imaging, and consent completed 24h prior.">
+            <ul className="text-sm space-y-2">
+              {[ {k:"Consent", ok:true}, {k:"Imaging reviewed", ok:true}, {k:"Fasting confirmed", ok:false}, {k:"COVID screen", ok:true} ].map(i => (
+                <li key={i.k} className="flex items-center justify-between"><span>{i.k}</span><Tag color={i.ok?"bg-emerald-100 text-emerald-700":"bg-amber-100 text-amber-700"}>{i.ok?"OK":"Missing"}</Tag></li>
+              ))}
+            </ul>
+          </Section>
+          <Section title="Bed Manager" desc="Live occupancy and transfer suggestions.">
+            <div className="flex items-center justify-between"><div className="text-sm">Ward occupancy</div><div className="text-2xl font-bold">{Math.round((db.resources.beds.occupied/db.resources.beds.total)*100)}%</div></div>
+            <ProgressBar value={Math.round((db.resources.beds.occupied/db.resources.beds.total)*100)} />
+            <div className="mt-3 text-sm text-slate-600">Suggestion: move two stable post-op patients to step-down to free beds.</div>
+          </Section>
+          <Section title="Intra-op Events and Incident Log" desc="Adverse events flagged to QA queue."><div className="text-sm text-slate-600">Prototype placeholder</div></Section>
+        </div>
+      );
+    }
+
+    function PageResources(){
+      return (
+        <div className="grid lg:grid-cols-2 gap-4">
+          <Section title="Roster Planner" desc="Weekly grid for staff (placeholder)"><div className="text-sm text-slate-600">Prototype placeholder</div></Section>
+          <Section title="Utilisation Heat Map" desc="Identify idle periods and peaks.">
+            <div className="grid grid-cols-7 gap-1">
+              {Array.from({length:84}).map((_,i)=>{ const v=(i*13)%100; const bg="hsl(" + (120 - v) + ", 70%, 60%)"; return <div key={i} className="h-6 rounded" style={{ background: bg }} title={"Utilisation " + v + "%"}></div>; })}
+            </div>
+          </Section>
+          <Section title="Asset Register" desc="Age, service intervals, warranty details.">
+            <table className="w-full text-sm"><thead><tr className="text-left text-slate-500"><th className="py-2">Asset</th><th>Age</th><th>Service Due</th><th>Status</th></tr></thead>
+              <tbody>{[{a:"MRI-1",age:"4y",due:"Nov 2025",st:"OK"},{a:"CT-1",age:"7y",due:"Dec 2025",st:"Plan Replace"},{a:"US-2",age:"2y",due:"Jan 2026",st:"OK"}].map(x=>(
+                <tr key={x.a} className="border-t"><td className="py-2">{x.a}</td><td>{x.age}</td><td>{x.due}</td><td><Tag color={x.st==="OK"?"bg-emerald-100 text-emerald-700":"bg-amber-100 text-amber-700"}>{x.st}</Tag></td></tr>
+              ))}</tbody>
+            </table>
+          </Section>
+          <Section title="Life-cycle Cost Reports" desc="Support repair vs replace decisions"><div className="text-sm text-slate-600">Prototype placeholder</div></Section>
+        </div>
+      );
+    }
+
+    function PageAdmin(){
+      const [rbac] = useState({ Patient:["Portal","Diagnostics"], GP:["Referral","Diagnostics"], Specialist:["Triage","CarePlan"], Coordinator:["Theatre","Resources"], Admin:["All"] });
+      const [events, setEvents] = useState([]);
+      const addRule = () => setEvents(e=>[...e, { ts:new Date().toISOString(), msg:"Added escalation rule: triage greater than 48h" }]);
+      return (
+        <div className="grid lg:grid-cols-2 gap-4">
+          <Section title="RBAC" desc="Role based access control templates"><table className="w-full text-sm"><thead><tr className="text-left text-slate-500"><th className="py-2">Role</th><th>Permissions</th></tr></thead><tbody>{Object.entries(rbac).map(([role, perms]) => (<tr key={role} className="border-t"><td className="py-2 font-medium">{role}</td><td>{perms.join(", ")}</td></tr>))}</tbody></table></Section>
+          <Section title="Notifications and Escalations" desc="Configure time based alerts and thresholds"><div className="flex gap-2"><Button onClick={addRule}>Add Rule</Button><Button variant="ghost">Configure Colours</Button></div><ul className="mt-3 text-sm list-disc ml-5">{events.map((e,i)=>(<li key={i}>{new Date(e.ts).toLocaleString()} - {e.msg}</li>))}</ul></Section>
+          <Section title="Integrations" desc="FHIR and HL7 connectors, webhooks, identity"><div className="grid sm:grid-cols-2 gap-3">{["EMR Epic","EMR Cerner","PACS","LIS","My Health Record","PRODA"].map(s=>(<div key={s} className="border rounded-xl p-3 flex items-center justify-between"><div><div className="font-medium">{s}</div><div className="text-xs text-slate-500">Status: Connected</div></div><Button variant="ghost">Settings</Button></div>))}</div></Section>
+          <Section title="Audit and Data Retention" desc="Every access is logged for compliance"><div className="text-sm text-slate-600">Prototype placeholder</div></Section>
+        </div>
+      );
+    }
+
+    function PageAnalytics(){
+      const [tab, setTab] = useState("Operational");
+      return (
+        <div className="space-y-4">
+          <div className="flex gap-2">
+            { ["Operational","Clinical","Financial"].map(t => (<button key={t} onClick={()=>setTab(t)} className={(tab===t?"bg-slate-900 text-white":"bg-white text-slate-700 border border-slate-200") + " px-3 py-1.5 rounded-full text-sm"}>{t}</button>)) }
+          </div>
+          {tab === "Operational" ? (
+            <Section title="Capacity Forecast" desc="Predict surges and plan rosters"><div className="grid sm:grid-cols-2 gap-3">{Array.from({length:6}).map((_,i)=> (<div key={i} className="border rounded-xl p-3"><div className="text-sm text-slate-600">Week {i+1}</div><div className="mt-2 h-20 rounded" style={{ background: "linear-gradient(90deg, #c7d2fe " + (20+i*10) + "%, #e5e7eb 0)" }}></div></div>))}</div></Section>
+          ) : null}
+          {tab === "Clinical" ? (
+            <Section title="Outcomes and PROMs" desc="Track readmission and response rates"><div className="grid sm:grid-cols-3 gap-3 text-sm">{[{k:"30 day readmission",v:"2.4%"},{k:"PROMs response",v:"78%"},{k:"On time starts",v:"86%"}].map(x=> (<div key={x.k} className="border rounded-xl p-3"><div className="text-slate-500">{x.k}</div><div className="text-2xl font-bold mt-1">{x.v}</div></div>))}</div></Section>
+          ) : null}
+          {tab === "Financial" ? (
+            <Section title="Cost Drivers" desc="Cancellation reasons and idle time impact"><div className="text-sm text-slate-600">Prototype placeholder</div></Section>
+          ) : null}
+        </div>
+      );
+    }
+
+    // ------------------------------
+    // App Shell (All-in-One logic)
+    // ------------------------------
+    function Login({ onLogin, onDemo }){
+      const [email, setEmail] = useState("gp@mca.au");
+      const [password, setPassword] = useState("demo");
+      const [err, setErr] = useState("");
+      const submit = (e) => { e.preventDefault(); const ok = onLogin(email, password); if (!ok) setErr("Invalid credentials"); };
+      const recover = () => { alert("Recovery options:\n- Email verification link\n- Mobile OTP\n- Support escalation for PRODA/MyGovID\n- Temporary bypass code for locked MFA device"); };
+      return (
+        <div className="min-h-screen grid place-items-center bg-gradient-to-br from-slate-50 to-slate-200">
+          <form onSubmit={submit} className="w-[92%] max-w-md bg-white p-6 rounded-2xl shadow border border-slate-200">
+            <div className="text-center mb-5"><div className="text-2xl font-bold">MedConnect AI</div><div className="text-slate-500 text-sm">Unified, AI guided orchestration for referrals to discharge</div></div>
+            <Field label="Email"><Input value={email} onChange={e=>setEmail(e.target.value)} /></Field>
+            <Field label="Password"><Input type="password" value={password} onChange={e=>setPassword(e.target.value)} /></Field>
+            {err ? <div className="text-rose-600 text-sm mb-2">{err}</div> : null}
+            <Button className="w-full" type="submit">Sign in</Button>
+            <div className="flex items-center justify-between mt-3"><button type="button" onClick={recover} className="text-xs text-slate-600 hover:underline">Forgot password or device?</button><span className="text-xs text-slate-500">MFA supported</span></div>
+            <div className="mt-5 border-t pt-4">
+              <div className="text-xs text-slate-500 mb-2">Or bypass auth for demo:</div>
+              <Button type="button" variant="ghost" className="w-full" onClick={onDemo}>View All Pages (Demo Mode)</Button>
+              <div className="text-xs text-slate-500 mt-3">Demo users (password: demo): gp@mca.au, spec@mca.au, ava@mca.au, coord@mca.au, admin@mca.au</div>
+            </div>
+          </form>
+        </div>
+      );
+    }
+
+    function App(){
+      const { user, login, logout, demoLogin, setRole } = useAuth();
+      const [route, setRoute] = useState("Patient Portal");
+      const [scope, setScope] = useState("All"); // for demo role filter
+
+      useEffect(()=>{
+        if(!user) return;
+        if(user.role==="*"){
+          // In demo mode, show union; default to first route
+          setRoute(allRoutes[0]);
+        } else {
+          const first = (routesByRole[user.role]||[])[0] || "Patient Portal";
+          setRoute(first);
+        }
+      },[user]);
+
+      if(!user) return <Login onLogin={login} onDemo={demoLogin} />;
+
+      const routes = user.role==="*" ? (scope==="All" ? allRoutes : routesByRole[scope] || allRoutes) : (routesByRole[user.role] || ["Patient Portal"]);
+
+      const onRoleChange = (val) => {
+        if(val==="All"){ setScope("All"); setRole("*"); }
+        else { setScope(val); setRole("*"); } // keep demo user but filter routes by this role
+      };
+
+      return (
+        <div className="h-screen flex flex-col bg-slate-50">
+          <Topbar user={user} onLogout={logout} onRoleChange={onRoleChange} />
+          <div className="flex-1 flex overflow-hidden">
+            <Sidebar routes={routes} active={route} onChange={setRoute} />
+            <main className="flex-1 p-4 overflow-y-auto">
+              {route === "Patient Portal" ? <PagePatientPortal /> : null}
+              {route === "GP e-Referral" ? <PageGPReferral /> : null}
+              {route === "Triage Inbox" ? <PageTriageInbox /> : null}
+              {route === "Diagnostics" ? <PageDiagnostics /> : null}
+              {route === "Theatre" ? <PageTheatre /> : null}
+              {route === "Resources" ? <PageResources /> : null}
+              {route === "Admin" ? <PageAdmin /> : null}
+              {route === "Analytics" ? <PageAnalytics /> : null}
+              {route === "Compliance" ? <Section title="Compliance Officer" desc="Review logs, manage breaches, ensure reporting"><div className="text-sm text-slate-600">Prototype placeholder</div></Section> : null}
+              {route === "Integrations" ? <Section title="Integrations" desc="FHIR and HL7 APIs, webhooks, identity federation"><div className="text-sm text-slate-600">Prototype placeholder</div></Section> : null}
+              {route === "Referral Timeline" ? <Section title="Referral Timeline" desc="View immutable audit"><div className="text-sm">Use the GP screen to create a referral, then revisit here.</div></Section> : null}
+              {route === "Care Plan" ? <Section title="Care Plan" desc="Post acceptance plan and tasks"><div className="text-sm text-slate-600">Prototype placeholder</div></Section> : null}
+              {route === "Bed Manager" ? <Section title="Bed Manager" desc="Transfer suggestions when occupancy is high"><div className="text-sm text-slate-600">See Theatre page panel for demo.</div></Section> : null}
+              {route === "Messages" ? <Section title="Messages" desc="Secure chat between patient and care team"><div className="text-sm text-slate-600">Prototype placeholder</div></Section> : null}
+            </main>
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<App />);
+  </script>
+</body>
+</html>
